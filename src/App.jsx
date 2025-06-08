@@ -1,310 +1,488 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { databases, ID, authService } from "./lib/appwrite";
+import Auth from "./components/Auth";
 import "./App.css";
-import { client } from "./lib/appwrite";
-import { AppwriteException } from "appwrite";
-import AppwriteSvg from "../public/appwrite.svg";
-import ReactSvg from "../public/react.svg";
+import "./styles/Auth.css";
 
 function App() {
-  const [detailHeight, setDetailHeight] = useState(55);
-  const [logs, setLogs] = useState([]);
-  const [status, setStatus] = useState("idle");
-  const [showLogs, setShowLogs] = useState(false);
+  const [recipes, setRecipes] = useState([]);
+  const [lists, setLists] = useState([]);
+  const [selectedRecipes, setSelectedRecipes] = useState([]);
+  const [currentList, setCurrentList] = useState(null);
+  const [newRecipe, setNewRecipe] = useState({ name: "", ingredients: "" });
+  const [newListName, setNewListName] = useState("");
+  const [activeTab, setActiveTab] = useState("recipes"); // recipes, lists
+  const [loading, setLoading] = useState(true); // Start with loading state
+  const [error, setError] = useState(null);
+  const [appInitialized, setAppInitialized] = useState(false);
+  const [user, setUser] = useState(null);
+  const [authChecked, setAuthChecked] = useState(false);
 
-  const detailsRef = useRef(null);
-
-  const updateHeight = useCallback(() => {
-    if (detailsRef.current) {
-      setDetailHeight(detailsRef.current.clientHeight);
-    }
-  }, [logs, showLogs]);
-
-  useEffect(() => {
-    updateHeight();
-    window.addEventListener("resize", updateHeight);
-    return () => window.removeEventListener("resize", updateHeight);
-  }, [updateHeight]);
-
-  useEffect(() => {
-    if (!detailsRef.current) return;
-    detailsRef.current.addEventListener("toggle", updateHeight);
-
-    return () => {
-      if (!detailsRef.current) return;
-      detailsRef.current.removeEventListener("toggle", updateHeight);
-    };
-  }, []);
-
-  async function sendPing() {
-    if (status === "loading") return;
-    setStatus("loading");
+  const RECIPES_COLLECTION_ID = "6844cc0a001dfcce5baa";
+  const LISTS_COLLECTION_ID = "6844cf2e002c1b4ef233";
+  // Use a default value for DATABASE_ID if not provided in environment variables
+  const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || "default";
+  
+  // Debug information
+  console.log("Environment variables:", {
+    DATABASE_ID,
+    endpoint: import.meta.env.VITE_APPWRITE_ENDPOINT,
+    projectId: import.meta.env.VITE_APPWRITE_PROJECT_ID
+  });
+  
+  // Fetch all recipes from Appwrite
+  const fetchRecipes = useCallback(async () => {
     try {
-      const result = await client.ping();
-      const log = {
-        date: new Date(),
-        method: "GET",
-        path: "/v1/ping",
-        status: 200,
-        response: JSON.stringify(result),
-      };
-      setLogs((prevLogs) => [log, ...prevLogs]);
-      setStatus("success");
-    } catch (err) {
-      const log = {
-        date: new Date(),
-        method: "GET",
-        path: "/v1/ping",
-        status: err instanceof AppwriteException ? err.code : 500,
-        response:
-          err instanceof AppwriteException
-            ? err.message
-            : "Something went wrong",
-      };
-      setLogs((prevLogs) => [log, ...prevLogs]);
-      setStatus("error");
+      setLoading(true);
+      const response = await databases.listDocuments(
+        DATABASE_ID,
+        RECIPES_COLLECTION_ID
+      );
+      setRecipes(response.documents);
+      setLoading(false);
+    } catch (error) {
+      console.error("Error fetching recipes:", error);
+      setError("Failed to fetch recipes");
+      setLoading(false);
     }
-    setShowLogs(true);
-  }
+  }, [DATABASE_ID, RECIPES_COLLECTION_ID]);
+
+  // Fetch all shopping lists from Appwrite
+  const fetchLists = useCallback(async () => {
+    try {
+      setLoading(true);
+      const response = await databases.listDocuments(
+        DATABASE_ID,
+        LISTS_COLLECTION_ID
+      );
+      setLists(response.documents);
+      setLoading(false);
+    } catch (error) {
+      console.error("Error fetching lists:", error);
+      setError("Failed to fetch lists");
+      setLoading(false);
+    }
+  }, [DATABASE_ID, LISTS_COLLECTION_ID]);
+
+  // Check for current user and initialize app
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        
+        // Check if we have the necessary environment variables
+        if (!import.meta.env.VITE_APPWRITE_DATABASE_ID) {
+          throw new Error("Missing DATABASE_ID in environment variables. Please add VITE_APPWRITE_DATABASE_ID to your .env file.");
+        }
+        
+        // Check if user is logged in
+        const currentUser = await authService.getCurrentUser();
+        setUser(currentUser);
+        setAuthChecked(true);
+        
+        // If user is logged in, fetch data
+        if (currentUser) {
+          await Promise.all([fetchRecipes(), fetchLists()]);
+          setAppInitialized(true);
+        }
+      } catch (error) {
+        console.error("Error checking authentication:", error);
+        setError(error.message || "Failed to initialize app");
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    checkAuth();
+  }, [fetchRecipes, fetchLists]);
+  
+  // Handle successful login
+  const handleLoginSuccess = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      
+      // Get current user after login
+      const currentUser = await authService.getCurrentUser();
+      setUser(currentUser);
+      
+      // Fetch data after login
+      await Promise.all([fetchRecipes(), fetchLists()]);
+      setAppInitialized(true);
+    } catch (error) {
+      console.error("Error after login:", error);
+      setError(error.message || "Failed to load data after login");
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  // Handle logout
+  const handleLogout = async () => {
+    try {
+      await authService.logout();
+      setUser(null);
+      setAppInitialized(false);
+      setRecipes([]);
+      setLists([]);
+    } catch (error) {
+      console.error("Error logging out:", error);
+      setError("Failed to log out");
+    }
+  };
+
+  // Create a new recipe
+  const createRecipe = async (e) => {
+    e.preventDefault();
+    if (!newRecipe.name || !newRecipe.ingredients) return;
+
+    try {
+      setLoading(true);
+      const ingredientsArray = newRecipe.ingredients
+        .split(",")
+        .map((item) => item.trim())
+        .filter((item) => item !== "");
+
+      const response = await databases.createDocument(
+        DATABASE_ID,
+        RECIPES_COLLECTION_ID,
+        ID.unique(),
+        {
+          name: newRecipe.name,
+          ingredients: ingredientsArray,
+        }
+      );
+
+      setRecipes([...recipes, response]);
+      setNewRecipe({ name: "", ingredients: "" });
+      setLoading(false);
+    } catch (error) {
+      console.error("Error creating recipe:", error);
+      setError("Failed to create recipe");
+      setLoading(false);
+    }
+  };
+
+  // Delete a recipe
+  const deleteRecipe = async (recipeId) => {
+    try {
+      setLoading(true);
+      await databases.deleteDocument(
+        DATABASE_ID,
+        RECIPES_COLLECTION_ID,
+        recipeId
+      );
+      setRecipes(recipes.filter((recipe) => recipe.$id !== recipeId));
+      setSelectedRecipes(selectedRecipes.filter((id) => id !== recipeId));
+      setLoading(false);
+    } catch (error) {
+      console.error("Error deleting recipe:", error);
+      setError("Failed to delete recipe");
+      setLoading(false);
+    }
+  };
+
+  // Toggle recipe selection for shopping list
+  const toggleRecipeSelection = (recipeId) => {
+    if (selectedRecipes.includes(recipeId)) {
+      setSelectedRecipes(selectedRecipes.filter((id) => id !== recipeId));
+    } else {
+      setSelectedRecipes([...selectedRecipes, recipeId]);
+    }
+  };
+
+  // Create a new shopping list from selected recipes
+  const createShoppingList = async (e) => {
+    e.preventDefault();
+    if (!newListName || selectedRecipes.length === 0) return;
+
+    try {
+      setLoading(true);
+      
+      // Get all selected recipes
+      const selectedRecipesData = recipes.filter((recipe) => 
+        selectedRecipes.includes(recipe.$id)
+      );
+      
+      // Extract and flatten all ingredients from selected recipes
+      const allIngredients = [];
+      selectedRecipesData.forEach((recipe) => {
+        recipe.ingredients.forEach((ingredient) => {
+          if (!allIngredients.includes(ingredient)) {
+            allIngredients.push(ingredient);
+          }
+        });
+      });
+
+      // Create the shopping list document
+      const response = await databases.createDocument(
+        DATABASE_ID,
+        LISTS_COLLECTION_ID,
+        ID.unique(),
+        {
+          name: newListName,
+          items: allIngredients,
+        }
+      );
+
+      setLists([...lists, response]);
+      setNewListName("");
+      setSelectedRecipes([]);
+      setActiveTab("lists");
+      setLoading(false);
+    } catch (error) {
+      console.error("Error creating shopping list:", error);
+      setError("Failed to create shopping list");
+      setLoading(false);
+    }
+  };
+
+  // Delete a shopping list
+  const deleteList = async (listId) => {
+    try {
+      setLoading(true);
+      await databases.deleteDocument(
+        DATABASE_ID,
+        LISTS_COLLECTION_ID,
+        listId
+      );
+      setLists(lists.filter((list) => list.$id !== listId));
+      if (currentList && currentList.$id === listId) {
+        setCurrentList(null);
+      }
+      setLoading(false);
+    } catch (error) {
+      console.error("Error deleting shopping list:", error);
+      setError("Failed to delete shopping list");
+      setLoading(false);
+    }
+  };
+
+  // View a specific shopping list
+  const viewList = (list) => {
+    setCurrentList(list);
+  };
+
+  // Back to lists overview
+  const backToLists = () => {
+    setCurrentList(null);
+  };
 
   return (
-    <main
-      className="checker-background flex flex-col items-center p-5"
-      style={{ marginBottom: `${detailHeight}px` }}
-    >
-      <div className="mt-25 flex w-full max-w-[40em] items-center justify-center lg:mt-34">
-        <div className="rounded-[25%] border border-[#19191C0A] bg-[#F9F9FA] p-3 shadow-[0px_9.36px_9.36px_0px_hsla(0,0%,0%,0.04)]">
-          <div className="rounded-[25%] border border-[#FAFAFB] bg-white p-5 shadow-[0px_2px_12px_0px_hsla(0,0%,0%,0.03)] lg:p-9">
-            <img
-              alt={"React logo"}
-              src={ReactSvg}
-              className="h-14 w-14"
-              width={56}
-              height={56}
-            />
-          </div>
-        </div>
-        <div
-          className={`flex w-38 items-center transition-opacity duration-2500 ${status === "success" ? "opacity-100" : "opacity-0"}`}
-        >
-          <div className="to-[rgba(253, 54, 110, 0.15)] h-[1px] flex-1 bg-gradient-to-l from-[#f02e65]"></div>
-          <div className="icon-check flex h-5 w-5 items-center justify-center rounded-full border border-[#FD366E52] bg-[#FD366E14] text-[#FD366E]"></div>
-          <div className="to-[rgba(253, 54, 110, 0.15)] h-[1px] flex-1 bg-gradient-to-r from-[#f02e65]"></div>
-        </div>
-        <div className="rounded-[25%] border border-[#19191C0A] bg-[#F9F9FA] p-3 shadow-[0px_9.36px_9.36px_0px_hsla(0,0%,0%,0.04)]">
-          <div className="rounded-[25%] border border-[#FAFAFB] bg-white p-5 shadow-[0px_2px_12px_0px_hsla(0,0%,0%,0.03)] lg:p-9">
-            <img
-              alt={"Appwrite logo"}
-              src={AppwriteSvg}
-              className="h-14 w-14"
-              width={56}
-              height={56}
-            />
-          </div>
-        </div>
-      </div>
-
-      <section className="mt-12 flex h-52 flex-col items-center">
-        {status === "loading" ? (
-          <div className="flex flex-row gap-4">
-            <div role="status">
-              <svg
-                aria-hidden="true"
-                className="h-5 w-5 animate-spin fill-[#FD366E] text-gray-200 dark:text-gray-600"
-                viewBox="0 0 100 101"
-                fill="none"
-                xmlns="http://www.w3.org/2000/svg"
-              >
-                <path
-                  d="M100 50.5908C100 78.2051 77.6142 100.591 50 100.591C22.3858 100.591 0 78.2051 0 50.5908C0 22.9766 22.3858 0.59082 50 0.59082C77.6142 0.59082 100 22.9766 100 50.5908ZM9.08144 50.5908C9.08144 73.1895 27.4013 91.5094 50 91.5094C72.5987 91.5094 90.9186 73.1895 90.9186 50.5908C90.9186 27.9921 72.5987 9.67226 50 9.67226C27.4013 9.67226 9.08144 27.9921 9.08144 50.5908Z"
-                  fill="currentColor"
-                />
-                <path
-                  d="M93.9676 39.0409C96.393 38.4038 97.8624 35.9116 97.0079 33.5539C95.2932 28.8227 92.871 24.3692 89.8167 20.348C85.8452 15.1192 80.8826 10.7238 75.2124 7.41289C69.5422 4.10194 63.2754 1.94025 56.7698 1.05124C51.7666 0.367541 46.6976 0.446843 41.7345 1.27873C39.2613 1.69328 37.813 4.19778 38.4501 6.62326C39.0873 9.04874 41.5694 10.4717 44.0505 10.1071C47.8511 9.54855 51.7191 9.52689 55.5402 10.0491C60.8642 10.7766 65.9928 12.5457 70.6331 15.2552C75.2735 17.9648 79.3347 21.5619 82.5849 25.841C84.9175 28.9121 86.7997 32.2913 88.1811 35.8758C89.083 38.2158 91.5421 39.6781 93.9676 39.0409Z"
-                  fill="currentFill"
-                />
-              </svg>
-              <span className="sr-only">Loading...</span>
-            </div>
-            <span>Waiting for connection...</span>
-          </div>
-        ) : status === "success" ? (
-          <h1 className="font-[Poppins] text-2xl font-light text-[#2D2D31]">
-            Congratulations!
-          </h1>
-        ) : (
-          <h1 className="font-[Poppins] text-2xl font-light text-[#2D2D31]">
-            Check connection
-          </h1>
+    <div className="app-container">
+      <header>
+        <h1>Shopping List App</h1>
+        {user && (
+          <button className="logout-button" onClick={handleLogout}>
+            Logout
+          </button>
         )}
+      </header>
 
-        <p className="mt-2 mb-8">
-          {status === "success" ? (
-            <span>You connected your app successfully.</span>
-          ) : status === "error" || status === "idle" ? (
-            <span>Send a ping to verify the connection</span>
-          ) : null}
-        </p>
-
-        <button
-          onClick={sendPing}
-          className={`cursor-pointer rounded-md bg-[#FD366E] px-2.5 py-1.5 ${status === "loading" ? "hidden" : "visible"}`}
-        >
-          <span className="text-white">Send a ping</span>
-        </button>
-      </section>
-
-      <div className="grid grid-rows-3 gap-7 lg:grid-cols-3 lg:grid-rows-none">
-        <div className="flex h-full w-72 flex-col gap-2 rounded-md border border-[#EDEDF0] bg-white p-4">
-          <h2 className="text-xl font-light text-[#2D2D31]">Edit your app</h2>
-          <p>
-            Edit{" "}
-            <code className="rounded-sm bg-[#EDEDF0] p-1">app/page.js</code> to
-            get started with building your app.
-          </p>
+      {loading && !error && (
+        <div className="loading-container">
+          <div className="loading-spinner"></div>
+          <p>Loading...</p>
         </div>
-        <a
-          href="https://cloud.appwrite.io"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <div className="flex h-full w-72 flex-col gap-2 rounded-md border border-[#EDEDF0] bg-white p-4">
-            <div className="flex flex-row items-center justify-between">
-              <h2 className="text-xl font-light text-[#2D2D31]">
-                Go to console
-              </h2>
-              <span className="icon-arrow-right text-[#D8D8DB]"></span>
-            </div>
-            <p>
-              Navigate to the console to control and oversee the Appwrite
-              services.
-            </p>
-          </div>
-        </a>
+      )}
 
-        <a
-          href="https://appwrite.io/docs"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <div className="flex h-full w-72 flex-col gap-2 rounded-md border border-[#EDEDF0] bg-white p-4">
-            <div className="flex flex-row items-center justify-between">
-              <h2 className="text-xl font-light text-[#2D2D31]">
-                Explore docs
-              </h2>
-              <span className="icon-arrow-right text-[#D8D8DB]"></span>
-            </div>
-            <p>
-              Discover the full power of Appwrite by diving into our
-              documentation.
-            </p>
-          </div>
-        </a>
-      </div>
+      {error && (
+        <div className="error-container">
+          <p className="error-message">{error}</p>
+        </div>
+      )}
 
-      <aside className="fixed bottom-0 flex w-full cursor-pointer border-t border-[#EDEDF0] bg-white">
-        <details open={showLogs} ref={detailsRef} className={"w-full"}>
-          <summary className="flex w-full flex-row justify-between p-4 marker:content-none">
-            <div className="flex gap-2">
-              <span className="font-semibold">Logs</span>
-              {logs.length > 0 && (
-                <div className="flex items-center rounded-md bg-[#E6E6E6] px-2">
-                  <span className="font-semibold">{logs.length}</span>
+      {!loading && authChecked && !user && !error && (
+        <Auth onLoginSuccess={handleLoginSuccess} />
+      )}
+
+      {user && appInitialized && !loading && (
+        <main>
+          <div className="tabs">
+            <button
+              className={activeTab === "recipes" ? "active" : ""}
+              onClick={() => setActiveTab("recipes")}
+            >
+              Recipes
+            </button>
+            <button
+              className={activeTab === "lists" ? "active" : ""}
+              onClick={() => setActiveTab("lists")}
+            >
+              Shopping Lists
+            </button>
+          </div>
+
+          {activeTab === "recipes" && (
+            <div className="recipes-container">
+              <div className="recipes-list">
+                <h2>My Recipes</h2>
+                {loading ? (
+                  <p>Loading recipes...</p>
+                ) : recipes.length === 0 ? (
+                  <p>No recipes found. Create your first recipe!</p>
+                ) : (
+                  <ul>
+                    {recipes.map((recipe) => (
+                      <li key={recipe.$id} className="recipe-item">
+                        <div className="recipe-header">
+                          <input
+                            type="checkbox"
+                            checked={selectedRecipes.includes(recipe.$id)}
+                            onChange={() => toggleRecipeSelection(recipe.$id)}
+                          />
+                          <h3>{recipe.name}</h3>
+                          <button
+                            className="delete-btn"
+                            onClick={() => deleteRecipe(recipe.$id)}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                        <div className="recipe-ingredients">
+                          <strong>Ingredients:</strong>
+                          <ul>
+                            {recipe.ingredients.map((ingredient, index) => (
+                              <li key={index}>{ingredient}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              <div className="forms-container">
+                <div className="recipe-form">
+                  <h2>Add New Recipe</h2>
+                  <form onSubmit={createRecipe}>
+                    <div className="form-group">
+                      <label htmlFor="recipe-name">Recipe Name:</label>
+                      <input
+                        type="text"
+                        id="recipe-name"
+                        value={newRecipe.name}
+                        onChange={(e) =>
+                          setNewRecipe({ ...newRecipe, name: e.target.value })
+                        }
+                        required
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label htmlFor="recipe-ingredients">
+                        Ingredients (comma separated):
+                      </label>
+                      <textarea
+                        id="recipe-ingredients"
+                        value={newRecipe.ingredients}
+                        onChange={(e) =>
+                          setNewRecipe({ ...newRecipe, ingredients: e.target.value })
+                        }
+                        required
+                      />
+                    </div>
+                    <button type="submit" disabled={loading}>
+                      {loading ? "Adding..." : "Add Recipe"}
+                    </button>
+                  </form>
                 </div>
+
+                {selectedRecipes.length > 0 && (
+                  <div className="shopping-list-form">
+                    <h2>Create Shopping List</h2>
+                    <p>{selectedRecipes.length} recipes selected</p>
+                    <form onSubmit={createShoppingList}>
+                      <div className="form-group">
+                        <label htmlFor="list-name">List Name:</label>
+                        <input
+                          type="text"
+                          id="list-name"
+                          value={newListName}
+                          onChange={(e) => setNewListName(e.target.value)}
+                          required
+                        />
+                      </div>
+                      <button type="submit" disabled={loading}>
+                        {loading ? "Creating..." : "Create Shopping List"}
+                      </button>
+                    </form>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+      {appInitialized && activeTab === "lists" && (
+        <div className="lists-container">
+          {currentList ? (
+            <div className="list-detail">
+              <div className="list-header">
+                <button onClick={backToLists} className="back-btn">
+                  &larr; Back
+                </button>
+                <h2>{currentList.name}</h2>
+                <button
+                  className="delete-btn"
+                  onClick={() => deleteList(currentList.$id)}
+                >
+                  Delete List
+                </button>
+              </div>
+              <div className="list-items">
+                <h3>Items:</h3>
+                {currentList.items.length === 0 ? (
+                  <p>No items in this list.</p>
+                ) : (
+                  <ul>
+                    {currentList.items.map((item, index) => (
+                      <li key={index} className="list-item">
+                        <input type="checkbox" id={`item-${index}`} />
+                        <label htmlFor={`item-${index}`}>{item}</label>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          ) : (
+            <>
+              <h2>My Shopping Lists</h2>
+              {loading ? (
+                <p>Loading shopping lists...</p>
+              ) : lists.length === 0 ? (
+                <p>
+                  No shopping lists found. Create a list from your recipes!
+                </p>
+              ) : (
+                <ul className="lists-grid">
+                  {lists.map((list) => (
+                    <li key={list.$id} className="list-card">
+                      <h3>{list.name}</h3>
+                      <p>{list.items.length} items</p>
+                      <div className="list-actions">
+                        <button onClick={() => viewList(list)} className="view-btn">
+                          View List
+                        </button>
+                        <button
+                          onClick={() => deleteList(list.$id)}
+                          className="delete-btn"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
               )}
-            </div>
-            <div className="icon">
-              <span className="icon-cheveron-down" aria-hidden="true"></span>
-            </div>
-          </summary>
-          <div className="flex w-full flex-col lg:flex-row">
-            <div className="flex flex-col border-r border-[#EDEDF0]">
-              <div className="border-y border-[#EDEDF0] bg-[#FAFAFB] px-4 py-2 text-[#97979B]">
-                Project
-              </div>
-              <div className="grid grid-cols-2 gap-4 p-4">
-                <div className="flex flex-col">
-                  <span className="text-[#97979B]">Endpoint</span>
-                  <span className="truncate">
-                    {import.meta.env.VITE_APPWRITE_ENDPOINT}
-                  </span>
-                </div>
-                <div className="flex flex-col">
-                  <span className="text-[#97979B]">Project-ID</span>
-                  <span className="truncate">
-                    {import.meta.env.VITE_APPWRITE_PROJECT_ID}
-                  </span>
-                </div>
-                <div className="flex flex-col">
-                  <span className="text-[#97979B]">Project name</span>
-                  <span className="truncate">
-                    {import.meta.env.VITE_APPWRITE_PROJECT_NAME}
-                  </span>
-                </div>
-              </div>
-            </div>
-            <div className="flex-grow">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-y border-[#EDEDF0] bg-[#FAFAFB] text-[#97979B]">
-                    {logs.length > 0 ? (
-                      <>
-                        <td className="w-52 py-2 pl-4">Date</td>
-                        <td>Status</td>
-                        <td>Method</td>
-                        <td className="hidden lg:table-cell">Path</td>
-                        <td className="hidden lg:table-cell">Response</td>
-                      </>
-                    ) : (
-                      <>
-                        <td className="py-2 pl-4">Logs</td>
-                      </>
-                    )}
-                  </tr>
-                </thead>
-                <tbody>
-                  {logs.length > 0 ? (
-                    logs.map((log) => (
-                      <tr>
-                        <td className="py-2 pl-4 font-[Fira_Code]">
-                          {log.date.toLocaleString("en-US", {
-                            month: "short",
-                            day: "numeric",
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}
-                        </td>
-                        <td>
-                          {log.status > 400 ? (
-                            <div className="w-fit rounded-sm bg-[#FF453A3D] px-1 text-[#B31212]">
-                              {log.status}
-                            </div>
-                          ) : (
-                            <div className="w-fit rounded-sm bg-[#10B9813D] px-1 text-[#0A714F]">
-                              {log.status}
-                            </div>
-                          )}
-                        </td>
-                        <td>{log.method}</td>
-                        <td className="hidden lg:table-cell">{log.path}</td>
-                        <td className="hidden font-[Fira_Code] lg:table-cell">
-                          {log.response}
-                        </td>
-                      </tr>
-                    ))
-                  ) : (
-                    <tr>
-                      <td className="py-2 pl-4 font-[Fira_Code]">
-                        There are no logs to show
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </details>
-      </aside>
-    </main>
+            </>
+          )}
+        </div>
+      )}
+        </main>
+      )}
+    </div>
   );
 }
 
