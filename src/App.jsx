@@ -269,6 +269,21 @@ function App() {
     setCurrentList(null);
   };
 
+  // Copy shopping list items to clipboard
+  const copyListToClipboard = () => {
+    if (!currentList || !currentList.items.length) return;
+    
+    const listText = currentList.items.join('\n');
+    navigator.clipboard.writeText(listText)
+      .then(() => {
+        alert('Shopping list copied to clipboard!');
+      })
+      .catch(err => {
+        console.error('Failed to copy list: ', err);
+        setError('Failed to copy list to clipboard');
+      });
+  };
+
   return (
     <div className="app-container">
       <header>
@@ -418,72 +433,81 @@ function App() {
             </div>
           )}
 
-      {appInitialized && activeTab === "lists" && (
-        <div className="lists-container">
-          {currentList ? (
-            <div className="list-detail">
-              <div className="list-header">
-                <button onClick={backToLists} className="back-btn">
-                  &larr; Back
-                </button>
-                <h2>{currentList.name}</h2>
-                <button
-                  className="delete-btn"
-                  onClick={() => deleteList(currentList.$id)}
-                >
-                  Delete List
-                </button>
-              </div>
-              <div className="list-items">
-                <h3>Items:</h3>
-                {currentList.items.length === 0 ? (
-                  <p>No items in this list.</p>
-                ) : (
-                  <ul>
-                    {currentList.items.map((item, index) => (
-                      <li key={index} className="list-item">
-                        <input type="checkbox" id={`item-${index}`} />
-                        <label htmlFor={`item-${index}`}>{item}</label>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </div>
-          ) : (
-            <>
-              <h2>My Shopping Lists</h2>
-              {loading ? (
-                <p>Loading shopping lists...</p>
-              ) : lists.length === 0 ? (
-                <p>
-                  No shopping lists found. Create a list from your recipes!
-                </p>
+          {appInitialized && activeTab === "lists" && (
+            <div className="lists-container">
+              {currentList ? (
+                <div className="list-detail">
+                  <div className="list-header">
+                    <button onClick={backToLists} className="back-btn">
+                      &larr; Back
+                    </button>
+                    <h2>{currentList.name}</h2>
+                    <div className="list-actions">
+                      <button
+                        className="copy-btn"
+                        onClick={copyListToClipboard}
+                        title="Copy list to clipboard"
+                      >
+                        Copy List
+                      </button>
+                      <button
+                        className="delete-btn"
+                        onClick={() => deleteList(currentList.$id)}
+                      >
+                        Delete List
+                      </button>
+                    </div>
+                  </div>
+                  <div className="list-items">
+                    <h3>Items:</h3>
+                    {currentList.items.length === 0 ? (
+                      <p>No items in this list.</p>
+                    ) : (
+                      <ul>
+                        {currentList.items.map((item, index) => (
+                          <li key={index} className="list-item">
+                            <input type="checkbox" id={`item-${index}`} />
+                            <label htmlFor={`item-${index}`}>{item}</label>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </div>
               ) : (
-                <ul className="lists-grid">
-                  {lists.map((list) => (
-                    <li key={list.$id} className="list-card">
-                      <h3>{list.name}</h3>
-                      <p>{list.items.length} items</p>
-                      <div className="list-actions">
-                        <button onClick={() => viewList(list)} className="view-btn">
-                          View List
-                        </button>
-                        <button
-                          onClick={() => deleteList(list.$id)}
-                          className="delete-btn"
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
+                <>
+                  <h2>My Shopping Lists</h2>
+                  {loading ? (
+                    <p>Loading shopping lists...</p>
+                  ) : lists.length === 0 ? (
+                    <p>
+                      No shopping lists found. Create a list from your recipes!
+                    </p>
+                  ) : (
+                    <ul className="lists-grid">
+                      {lists.map((list) => (
+                        <li key={list.$id} className="list-card">
+                          <h3>{list.name}</h3>
+                          <p>{list.items.length} items</p>
+                          <div className="list-actions">
+                            <button onClick={() => viewList(list)} className="view-btn">
+                              View List
+                            </button>
+                            <button
+                              onClick={() => deleteList(list.$id)}
+                              className="delete-btn"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </>
               )}
-            </>
+            </div>
           )}
-        </div>
-      )}
         </main>
       )}
     </div>

@@ -207,6 +207,15 @@ button:disabled {
   background-color: #c0392b;
 }
 
+.copy-btn {
+  background-color: #27ae60;
+  margin-right: 10px;
+}
+
+.copy-btn:hover {
+  background-color: #219653;
+}
+
 /* Lists Section */
 .lists-container {
   background-color: white;
@@ -266,6 +275,7 @@ button:disabled {
 
 .list-header h2 {
   flex-grow: 1;
+  margin: 0 15px;
   color: #2c3e50;
 }
 
