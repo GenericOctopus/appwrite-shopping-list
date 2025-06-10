@@ -104,13 +104,37 @@ header h1 {
   margin-bottom: 10px;
 }
 
+.checkbox-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+}
+
 .recipe-header h3 {
   flex-grow: 1;
   font-size: 1.2rem;
 }
 
-.recipe-ingredients {
+.recipe-ingredients-accordion {
   margin-left: 30px;
+  margin-bottom: 10px;
+}
+
+.recipe-ingredients-accordion summary {
+  cursor: pointer;
+  font-weight: 500;
+  color: #3498db;
+  padding: 5px 0;
+}
+
+.recipe-ingredients-accordion summary:hover {
+  color: #2980b9;
+}
+
+.recipe-ingredients {
+  margin-top: 10px;
+  padding-left: 10px;
 }
 
 .recipe-ingredients ul {

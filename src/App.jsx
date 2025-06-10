@@ -327,11 +327,13 @@ function App() {
                     {recipes.map((recipe) => (
                       <li key={recipe.$id} className="recipe-item">
                         <div className="recipe-header">
-                          <input
-                            type="checkbox"
-                            checked={selectedRecipes.includes(recipe.$id)}
-                            onChange={() => toggleRecipeSelection(recipe.$id)}
-                          />
+                          <div className="checkbox-container">
+                            <input
+                              type="checkbox"
+                              checked={selectedRecipes.includes(recipe.$id)}
+                              onChange={() => toggleRecipeSelection(recipe.$id)}
+                            />
+                          </div>
                           <h3>{recipe.name}</h3>
                           <button
                             className="delete-btn"
@@ -340,14 +342,16 @@ function App() {
                             Delete
                           </button>
                         </div>
-                        <div className="recipe-ingredients">
-                          <strong>Ingredients:</strong>
-                          <ul>
-                            {recipe.ingredients.map((ingredient, index) => (
-                              <li key={index}>{ingredient}</li>
-                            ))}
-                          </ul>
-                        </div>
+                        <details className="recipe-ingredients-accordion">
+                          <summary>Ingredients</summary>
+                          <div className="recipe-ingredients">
+                            <ul>
+                              {recipe.ingredients.map((ingredient, index) => (
+                                <li key={index}>{ingredient}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        </details>
                       </li>
                     ))}
                   </ul>
