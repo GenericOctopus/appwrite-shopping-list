@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { databases, ID, authService } from "./lib/appwrite";
+import { initializeRxDB } from "./lib/rxdb-config";
 import Auth from "./components/Auth";
 import "./App.css";
 import "./styles/Auth.css";
@@ -8,61 +9,126 @@ function App() {
   const [recipes, setRecipes] = useState([]);
   const [lists, setLists] = useState([]);
   const [selectedRecipes, setSelectedRecipes] = useState([]);
-  const [currentList, setCurrentList] = useState(null);
   const [newRecipe, setNewRecipe] = useState({ name: "", ingredients: "" });
   const [newListName, setNewListName] = useState("");
-  const [activeTab, setActiveTab] = useState("recipes"); // recipes, lists
-  const [loading, setLoading] = useState(true); // Start with loading state
+  const [currentList, setCurrentList] = useState(null);
+  const [activeTab, setActiveTab] = useState("recipes");
+  const [showRecipeForm, setShowRecipeForm] = useState(false);
+  const [showListForm, setShowListForm] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [appInitialized, setAppInitialized] = useState(false);
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
+  const [offlineMode, setOfflineMode] = useState(false);
+  const [rxdbInstance, setRxdbInstance] = useState(null);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
 
   const RECIPES_COLLECTION_ID = "6844cc0a001dfcce5baa";
   const LISTS_COLLECTION_ID = "6844cf2e002c1b4ef233";
-  // Use a default value for DATABASE_ID if not provided in environment variables
-  const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || "default";
-  
-  // Debug information
-  console.log("Environment variables:", {
-    DATABASE_ID,
-    endpoint: import.meta.env.VITE_APPWRITE_ENDPOINT,
-    projectId: import.meta.env.VITE_APPWRITE_PROJECT_ID
-  });
-  
-  // Fetch all recipes from Appwrite
+  const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID;
+
+  // Initialize RxDB
+  const setupRxDB = useCallback(async () => {
+    try {
+      const rxdbSetup = await initializeRxDB();
+      setRxdbInstance(rxdbSetup);
+      
+      // Initial data sync
+      if (navigator.onLine) {
+        try {
+          // Wait for initial pull replication to complete
+          await Promise.all([
+            rxdbSetup.replication.recipes.pull.awaitInitialPull(),
+            rxdbSetup.replication.lists.pull.awaitInitialPull()
+          ]);
+          console.log("Initial data pull complete");
+        } catch (pullError) {
+          console.warn("Initial data pull failed:", pullError);
+        }
+      }
+      
+      return rxdbSetup;
+    } catch (error) {
+      console.error("Error initializing RxDB:", error);
+      setError("Failed to initialize offline database");
+      return null;
+    }
+  }, []);
+
+  // Fetch all recipes - first try from RxDB, fallback to Appwrite
   const fetchRecipes = useCallback(async () => {
     try {
       setLoading(true);
-      const response = await databases.listDocuments(
-        DATABASE_ID,
-        RECIPES_COLLECTION_ID
-      );
-      setRecipes(response.documents);
+      
+      if (rxdbInstance) {
+        try {
+          // Try to get data from local database first
+          const localRecipes = await rxdbInstance.dbService.getRecipes();
+          if (localRecipes && localRecipes.length > 0) {
+            setRecipes(localRecipes);
+            setLoading(false);
+            return;
+          }
+        } catch (localError) {
+          console.warn("Error fetching from local database, falling back to remote:", localError);
+        }
+      }
+      
+      // If offline mode is enabled or local fetch failed, try remote
+      if (navigator.onLine) {
+        const response = await databases.listDocuments(
+          DATABASE_ID,
+          RECIPES_COLLECTION_ID
+        );
+        setRecipes(response.documents);
+      }
+      
       setLoading(false);
     } catch (error) {
       console.error("Error fetching recipes:", error);
       setError("Failed to fetch recipes");
+      setOfflineMode(navigator.onLine === false); // Set offline mode if network error
       setLoading(false);
     }
-  }, [DATABASE_ID, RECIPES_COLLECTION_ID]);
+  }, [DATABASE_ID, RECIPES_COLLECTION_ID, rxdbInstance]);
 
-  // Fetch all shopping lists from Appwrite
+  // Fetch all shopping lists - first try from RxDB, fallback to Appwrite
   const fetchLists = useCallback(async () => {
     try {
       setLoading(true);
-      const response = await databases.listDocuments(
-        DATABASE_ID,
-        LISTS_COLLECTION_ID
-      );
-      setLists(response.documents);
+      
+      if (rxdbInstance) {
+        try {
+          // Try to get data from local database first
+          const localLists = await rxdbInstance.dbService.getLists();
+          if (localLists && localLists.length > 0) {
+            setLists(localLists);
+            setLoading(false);
+            return;
+          }
+        } catch (localError) {
+          console.warn("Error fetching from local database, falling back to remote:", localError);
+        }
+      }
+      
+      // If offline mode is enabled or local fetch failed, try remote
+      if (navigator.onLine) {
+        const response = await databases.listDocuments(
+          DATABASE_ID,
+          LISTS_COLLECTION_ID
+        );
+        setLists(response.documents);
+      }
+      
       setLoading(false);
     } catch (error) {
       console.error("Error fetching lists:", error);
       setError("Failed to fetch lists");
+      setOfflineMode(navigator.onLine === false); // Set offline mode if network error
       setLoading(false);
     }
-  }, [DATABASE_ID, LISTS_COLLECTION_ID]);
+  }, [DATABASE_ID, LISTS_COLLECTION_ID, rxdbInstance]);
 
   // Check for current user and initialize app
   useEffect(() => {
@@ -81,8 +147,9 @@ function App() {
         setUser(currentUser);
         setAuthChecked(true);
         
-        // If user is logged in, fetch data
+        // If user is logged in, initialize RxDB and fetch data
         if (currentUser) {
+          await setupRxDB();
           await Promise.all([fetchRecipes(), fetchLists()]);
           setAppInitialized(true);
         }
@@ -95,24 +162,53 @@ function App() {
     };
     
     checkAuth();
-  }, [fetchRecipes, fetchLists]);
+  }, [fetchRecipes, fetchLists, setupRxDB]);
+  
+  // Monitor online/offline status
+  useEffect(() => {
+    const handleOnline = () => {
+      console.log("App is online");
+      setIsOnline(true);
+      setOfflineMode(false);
+      // Refresh data when coming back online
+      if (user && rxdbInstance) {
+        fetchRecipes();
+        fetchLists();
+      }
+    };
+    
+    const handleOffline = () => {
+      console.log("App is offline");
+      setIsOnline(false);
+      setOfflineMode(true);
+    };
+    
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    
+    // Set initial offline state
+    setOfflineMode(!navigator.onLine);
+    
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [user, rxdbInstance, fetchRecipes, fetchLists]);
   
   // Handle successful login
   const handleLoginSuccess = async () => {
     try {
       setLoading(true);
-      setError(null);
-      
-      // Get current user after login
       const currentUser = await authService.getCurrentUser();
       setUser(currentUser);
       
-      // Fetch data after login
+      // Initialize RxDB and fetch data after login
+      await setupRxDB();
       await Promise.all([fetchRecipes(), fetchLists()]);
       setAppInitialized(true);
     } catch (error) {
       console.error("Error after login:", error);
-      setError(error.message || "Failed to load data after login");
+      setError("Failed to initialize app after login");
     } finally {
       setLoading(false);
     }
@@ -126,35 +222,57 @@ function App() {
       setAppInitialized(false);
       setRecipes([]);
       setLists([]);
+      setCurrentList(null);
+      setSelectedRecipes([]);
     } catch (error) {
-      console.error("Error logging out:", error);
-      setError("Failed to log out");
+      console.error("Logout error:", error);
+      setError("Failed to logout");
     }
   };
-
-  // Create a new recipe
-  const createRecipe = async (e) => {
+  
+  // Handle recipe creation
+  const handleCreateRecipe = async (e) => {
     e.preventDefault();
-    if (!newRecipe.name || !newRecipe.ingredients) return;
-
+    
+    if (!newRecipe.name || !newRecipe.ingredients) {
+      setError("Recipe name and ingredients are required");
+      return;
+    }
+    
     try {
       setLoading(true);
+      setError(null);
+      
       const ingredientsArray = newRecipe.ingredients
         .split(",")
         .map((item) => item.trim())
         .filter((item) => item !== "");
 
-      const response = await databases.createDocument(
-        DATABASE_ID,
-        RECIPES_COLLECTION_ID,
-        ID.unique(),
-        {
-          name: newRecipe.name,
-          ingredients: ingredientsArray,
-        }
-      );
+      const recipeId = ID.unique();
+      const recipeData = {
+        $id: recipeId,
+        name: newRecipe.name,
+        ingredients: ingredientsArray
+      };
+      
+      // In offline mode, only save to local database
+      if (offlineMode && rxdbInstance) {
+        const newRecipeDoc = await rxdbInstance.dbService.createRecipe(recipeData);
+        setRecipes([...recipes, newRecipeDoc]);
+      } else {
+        // In online mode, save to Appwrite and local database will sync via replication
+        const response = await databases.createDocument(
+          DATABASE_ID,
+          RECIPES_COLLECTION_ID,
+          recipeId,
+          {
+            name: newRecipe.name,
+            ingredients: ingredientsArray,
+          }
+        );
+        setRecipes([...recipes, response]);
+      }
 
-      setRecipes([...recipes, response]);
       setNewRecipe({ name: "", ingredients: "" });
       setLoading(false);
     } catch (error) {
@@ -163,22 +281,124 @@ function App() {
       setLoading(false);
     }
   };
-
-  // Delete a recipe
+  
+  // Handle recipe deletion
   const deleteRecipe = async (recipeId) => {
     try {
       setLoading(true);
-      await databases.deleteDocument(
-        DATABASE_ID,
-        RECIPES_COLLECTION_ID,
-        recipeId
-      );
+      
+      // In offline mode, only delete from local database
+      if (offlineMode && rxdbInstance) {
+        await rxdbInstance.dbService.deleteRecipe(recipeId);
+      } else {
+        // Delete from Appwrite
+        await databases.deleteDocument(
+          DATABASE_ID,
+          RECIPES_COLLECTION_ID,
+          recipeId
+        );
+      }
+      
       setRecipes(recipes.filter((recipe) => recipe.$id !== recipeId));
       setSelectedRecipes(selectedRecipes.filter((id) => id !== recipeId));
       setLoading(false);
     } catch (error) {
       console.error("Error deleting recipe:", error);
       setError("Failed to delete recipe");
+      setLoading(false);
+    }
+  };
+  
+  // Handle shopping list creation
+  const createList = async (e) => {
+    e.preventDefault();
+    
+    if (!newListName) {
+      setError("List name is required");
+      return;
+    }
+    
+    if (selectedRecipes.length === 0) {
+      setError("Please select at least one recipe");
+      return;
+    }
+    
+    try {
+      setLoading(true);
+      setError(null);
+      
+      // Gather all ingredients from selected recipes
+      const allIngredients = [];
+      selectedRecipes.forEach((recipeId) => {
+        const recipe = recipes.find((r) => r.$id === recipeId);
+        recipe.ingredients.forEach((ingredient) => {
+          if (!allIngredients.includes(ingredient)) {
+            allIngredients.push(ingredient);
+          }
+        });
+      });
+
+      const listId = ID.unique();
+      const listData = {
+        $id: listId,
+        name: newListName,
+        items: allIngredients
+      };
+      
+      // In offline mode, only save to local database
+      if (offlineMode && rxdbInstance) {
+        const newListDoc = await rxdbInstance.dbService.createList(listData);
+        setLists([...lists, newListDoc]);
+      } else {
+        // In online mode, save to Appwrite and local database will sync via replication
+        const response = await databases.createDocument(
+          DATABASE_ID,
+          LISTS_COLLECTION_ID,
+          listId,
+          {
+            name: newListName,
+            items: allIngredients,
+          }
+        );
+        setLists([...lists, response]);
+      }
+
+      setNewListName("");
+      setSelectedRecipes([]);
+      setActiveTab("lists");
+      setLoading(false);
+    } catch (error) {
+      console.error("Error creating list:", error);
+      setError("Failed to create shopping list");
+      setLoading(false);
+    }
+  };
+  
+  // Handle shopping list deletion
+  const deleteList = async (listId) => {
+    try {
+      setLoading(true);
+      
+      // In offline mode, only delete from local database
+      if (offlineMode && rxdbInstance) {
+        await rxdbInstance.dbService.deleteList(listId);
+      } else {
+        // Delete from Appwrite
+        await databases.deleteDocument(
+          DATABASE_ID,
+          LISTS_COLLECTION_ID,
+          listId
+        );
+      }
+      
+      setLists(lists.filter((list) => list.$id !== listId));
+      if (currentList && currentList.$id === listId) {
+        setCurrentList(null);
+      }
+      setLoading(false);
+    } catch (error) {
+      console.error("Error deleting list:", error);
+      setError("Failed to delete shopping list");
       setLoading(false);
     }
   };
@@ -189,73 +409,6 @@ function App() {
       setSelectedRecipes(selectedRecipes.filter((id) => id !== recipeId));
     } else {
       setSelectedRecipes([...selectedRecipes, recipeId]);
-    }
-  };
-
-  // Create a new shopping list from selected recipes
-  const createShoppingList = async (e) => {
-    e.preventDefault();
-    if (!newListName || selectedRecipes.length === 0) return;
-
-    try {
-      setLoading(true);
-      
-      // Get all selected recipes
-      const selectedRecipesData = recipes.filter((recipe) => 
-        selectedRecipes.includes(recipe.$id)
-      );
-      
-      // Extract and flatten all ingredients from selected recipes
-      const allIngredients = [];
-      selectedRecipesData.forEach((recipe) => {
-        recipe.ingredients.forEach((ingredient) => {
-          if (!allIngredients.includes(ingredient)) {
-            allIngredients.push(ingredient);
-          }
-        });
-      });
-
-      // Create the shopping list document
-      const response = await databases.createDocument(
-        DATABASE_ID,
-        LISTS_COLLECTION_ID,
-        ID.unique(),
-        {
-          name: newListName,
-          items: allIngredients,
-        }
-      );
-
-      setLists([...lists, response]);
-      setNewListName("");
-      setSelectedRecipes([]);
-      setActiveTab("lists");
-      setLoading(false);
-    } catch (error) {
-      console.error("Error creating shopping list:", error);
-      setError("Failed to create shopping list");
-      setLoading(false);
-    }
-  };
-
-  // Delete a shopping list
-  const deleteList = async (listId) => {
-    try {
-      setLoading(true);
-      await databases.deleteDocument(
-        DATABASE_ID,
-        LISTS_COLLECTION_ID,
-        listId
-      );
-      setLists(lists.filter((list) => list.$id !== listId));
-      if (currentList && currentList.$id === listId) {
-        setCurrentList(null);
-      }
-      setLoading(false);
-    } catch (error) {
-      console.error("Error deleting shopping list:", error);
-      setError("Failed to delete shopping list");
-      setLoading(false);
     }
   };
 
@@ -289,9 +442,16 @@ function App() {
       <header>
         <h1>Shopping List App</h1>
         {user && (
-          <button className="logout-button" onClick={handleLogout}>
-            Logout
-          </button>
+          <div className="header-controls">
+            {offlineMode && (
+              <div className="offline-indicator">
+                Offline Mode
+              </div>
+            )}
+            <button className="logout-button" onClick={handleLogout}>
+              Logout
+            </button>
+          </div>
         )}
       </header>
 
@@ -376,7 +536,7 @@ function App() {
               <div className="forms-container">
                 <div className="recipe-form">
                   <h2>Add New Recipe</h2>
-                  <form onSubmit={createRecipe}>
+                  <form onSubmit={handleCreateRecipe}>
                     <div className="form-group">
                       <label htmlFor="recipe-name">Recipe Name:</label>
                       <input
@@ -412,7 +572,7 @@ function App() {
                   <div className="shopping-list-form">
                     <h2>Create Shopping List</h2>
                     <p>{selectedRecipes.length} recipes selected</p>
-                    <form onSubmit={createShoppingList}>
+                    <form onSubmit={createList}>
                       <div className="form-group">
                         <label htmlFor="list-name">List Name:</label>
                         <input
@@ -420,11 +580,12 @@ function App() {
                           id="list-name"
                           value={newListName}
                           onChange={(e) => setNewListName(e.target.value)}
+                          placeholder="Enter list name"
                           required
                         />
                       </div>
-                      <button type="submit" disabled={loading}>
-                        {loading ? "Creating..." : "Create Shopping List"}
+                      <button type="submit" disabled={selectedRecipes.length === 0}>
+                        Create Shopping List
                       </button>
                     </form>
                   </div>
@@ -433,76 +594,100 @@ function App() {
             </div>
           )}
 
-          {appInitialized && activeTab === "lists" && (
+          {activeTab === "lists" && (
             <div className="lists-container">
               {currentList ? (
                 <div className="list-detail">
                   <div className="list-header">
-                    <button onClick={backToLists} className="back-btn">
-                      &larr; Back
+                    <button onClick={backToLists} className="back-button">
+                      ← Back to Lists
                     </button>
                     <h2>{currentList.name}</h2>
-                    <div className="list-actions">
-                      <button
-                        className="copy-btn"
-                        onClick={copyListToClipboard}
-                        title="Copy list to clipboard"
-                      >
-                        Copy List
-                      </button>
-                      <button
-                        className="delete-btn"
-                        onClick={() => deleteList(currentList.$id)}
-                      >
-                        Delete List
-                      </button>
-                    </div>
+                    <button onClick={copyListToClipboard} className="copy-button">
+                      Copy List
+                    </button>
                   </div>
-                  <div className="list-items">
-                    <h3>Items:</h3>
-                    {currentList.items.length === 0 ? (
-                      <p>No items in this list.</p>
-                    ) : (
-                      <ul>
-                        {currentList.items.map((item, index) => (
-                          <li key={index} className="list-item">
-                            <input type="checkbox" id={`item-${index}`} />
-                            <label htmlFor={`item-${index}`}>{item}</label>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
+                  {currentList.items.length > 0 ? (
+                    <ul className="shopping-items">
+                      {currentList.items.map((item, index) => (
+                        <li key={index}>{item}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p>No items in this list.</p>
+                  )}
                 </div>
               ) : (
                 <>
-                  <h2>My Shopping Lists</h2>
-                  {loading ? (
-                    <p>Loading shopping lists...</p>
-                  ) : lists.length === 0 ? (
-                    <p>
-                      No shopping lists found. Create a list from your recipes!
-                    </p>
-                  ) : (
-                    <ul className="lists-grid">
+                  <h2>Shopping Lists</h2>
+                  {lists.length > 0 ? (
+                    <div className="lists-grid">
                       {lists.map((list) => (
-                        <li key={list.$id} className="list-card">
+                        <div key={list.$id} className="list-card">
                           <h3>{list.name}</h3>
                           <p>{list.items.length} items</p>
                           <div className="list-actions">
-                            <button onClick={() => viewList(list)} className="view-btn">
-                              View List
-                            </button>
-                            <button
-                              onClick={() => deleteList(list.$id)}
-                              className="delete-btn"
-                            >
-                              Delete
-                            </button>
+                            <button onClick={() => viewList(list)}>View</button>
+                            <button onClick={() => deleteList(list.$id)}>Delete</button>
                           </div>
-                        </li>
+                        </div>
                       ))}
-                    </ul>
+                    </div>
+                  ) : (
+                    <p>No shopping lists yet. Create one from your recipes!</p>
+                  )}
+                  <button
+                    className="toggle-form-button"
+                    onClick={() => setShowListForm(!showListForm)}
+                  >
+                    {showListForm ? "Hide Form" : "Create List"}
+                  </button>
+                  {showListForm && (
+                    <div className="shopping-list-form">
+                      <h2>Create Shopping List</h2>
+                      <p>{selectedRecipes.length} recipes selected</p>
+                      <form onSubmit={createList}>
+                        <div className="form-group">
+                          <label htmlFor="list-name">List Name:</label>
+                          <input
+                            type="text"
+                            id="list-name"
+                            value={newListName}
+                            onChange={(e) => setNewListName(e.target.value)}
+                            placeholder="Enter list name"
+                            required
+                          />
+                        </div>
+                        <div className="recipe-selection">
+                          <h3>Select Recipes:</h3>
+                          {recipes.length > 0 ? (
+                            <div className="recipe-checkboxes">
+                              {recipes.map((recipe) => (
+                                <div key={recipe.$id} className="recipe-checkbox">
+                                  <input
+                                    type="checkbox"
+                                    id={`recipe-${recipe.$id}`}
+                                    checked={selectedRecipes.includes(recipe.$id)}
+                                    onChange={() => toggleRecipeSelection(recipe.$id)}
+                                  />
+                                  <label htmlFor={`recipe-${recipe.$id}`}>
+                                    {recipe.name}
+                                  </label>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p>No recipes available. Add some recipes first!</p>
+                          )}
+                        </div>
+                        <button
+                          type="submit"
+                          disabled={selectedRecipes.length === 0 || !newListName}
+                        >
+                          Create List
+                        </button>
+                      </form>
+                    </div>
                   )}
                 </>
               )}
